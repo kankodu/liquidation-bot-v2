@@ -310,7 +310,7 @@ class Account:
             self.time_of_next_update = time_of_next_update
 
         logger.info("Account: %s next update scheduled for %s", self.address,
-                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.time_of_next_update)))
+                    time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.time_of_next_update)))
         return self.time_of_next_update
 
 
@@ -563,7 +563,7 @@ class AccountMonitor:
             # if next update hasn't changed, means we already have a check scheduled
             if next_update_time == prev_scheduled_time:
                 logger.info("AccountMonitor: %s next update already scheduled for %s",
-                            address, time.strftime("%Y-%m-%d %H:%M:%S",
+                            address, time.strftime('%Y-%m-%d %H:%M:%S',
                                                   time.localtime(next_update_time)))
                 return
 
@@ -601,7 +601,7 @@ class AccountMonitor:
             self.last_saved_block = self.latest_block
 
             logger.info("AccountMonitor: State saved at time %s up to block %s",
-                        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                        time.strftime('%Y-%m-%d %H:%M:%S', time.localtime()),
                         self.latest_block)
         except Exception as ex: # pylint: disable=broad-except
             logger.error("AccountMonitor: Failed to save state: %s", ex, exc_info=True)
@@ -633,7 +633,7 @@ class AccountMonitor:
                                 address,
                                 account.controller.address,
                                 account.current_health_score,
-                                time.strftime("%Y-%m-%d %H:%M:%S",
+                                time.strftime('%Y-%m-%d %H:%M:%S',
                                 time.localtime(account.time_of_next_update)))
 
                 self.rebuild_queue()
@@ -672,7 +672,7 @@ class AccountMonitor:
                 self.update_queue.put((next_update_time, address))
                 logger.info("AccountMonitor: %s added to queue"
                             " with health score %s, next update at %s",
-                            address, health_score, time.strftime("%Y-%m-%d %H:%M:%S",
+                            address, health_score, time.strftime('%Y-%m-%d %H:%M:%S',
                                                                  time.localtime(next_update_time)))
             except Exception as ex: # pylint: disable=broad-except
                 logger.error("AccountMonitor: Failed to put account %s into rebuilt queue: %s",

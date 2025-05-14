@@ -181,7 +181,7 @@ def post_unhealthy_account_on_slack(account_address: str, vault_address: str,
         f"*Vault*: `{vault_address}`\n"
         f"*Health Score*: `{health_score:.4f}`\n"
         f"*Value Borrowed*: `${value_borrowed / 10 ** 18:,.2f}`\n"
-        f"Time of detection: {time.strftime("%Y-%m-%d %H:%M:%S")}\n"
+        f"Time of detection: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
         f"Network: `{config.CHAIN_NAME}`\n\n"
     )
 
@@ -237,15 +237,13 @@ def post_liquidation_opportunity_on_slack(account_address: str, vault_address: s
 
         formatted_data = (
             f"*Liquidation Opportunity Details:*\n"
-            f"• Profit: {Web3.from_wei(liquidation_data["profit"], "ether")} ETH\n"
-            f"• Collateral Vault Address: `{liquidation_data["collateral_address"]}`\n"
-            f"• Collateral Asset: `{liquidation_data["collateral_asset"]}`\n"
-            f"• Leftover Borrow Asset: {Web3.from_wei(liquidation_data["leftover_borrow"],
-                                                    "ether")}\n"
-            f"• Leftover Borrow Asset in ETH terms (excluding gas): {Web3.from_wei(
-                liquidation_data["leftover_borrow_in_eth"], "ether")} ETH\n\n"
+            f"• Profit: {Web3.from_wei(liquidation_data['profit'], 'ether')} ETH\n"
+            f"• Collateral Vault Address: `{liquidation_data['collateral_address']}`\n"
+            f"• Collateral Asset: `{liquidation_data['collateral_asset']}`\n"
+            f"• Leftover Borrow Asset: {Web3.from_wei(liquidation_data['leftover_borrow'],'ether')}\n"
+            f"• Leftover Borrow Asset in ETH terms (excluding gas): {Web3.from_wei(liquidation_data['leftover_borrow_in_eth'], 'ether')} ETH\n\n"
             f"<{execution_url}|Click here to execute this liquidation manually>\n\n"
-            f"Time of detection: {time.strftime("%Y-%m-%d %H:%M:%S")}\n\n"
+            f"Time of detection: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"Network: `{config.CHAIN_NAME}`"
         )
         message += f"\n\n{formatted_data}"
@@ -280,16 +278,16 @@ def post_liquidation_result_on_slack(account_address: str, vault_address: str,
     tx_url = f"{config.EXPLORER_URL}/tx/{tx_hash}"
     
     formatted_data = (
-        f"*Liquidation Details:*\n"
-        f"• Profit: {Web3.from_wei(liquidation_data["profit"], "ether")} ETH\n"
-        f"• Collateral Vault Address: `{liquidation_data["collateral_address"]}`\n"
-        f"• Collateral Asset: `{liquidation_data["collateral_asset"]}`\n"
-        f"• Leftover Collateral: {Web3.from_wei(liquidation_data["leftover_borrow"], "ether")} {liquidation_data["collateral_asset"]}\n"
-        f"• Leftover Collateral in ETH terms: {Web3.from_wei(liquidation_data["leftover_borrow_in_eth"], "ether")} ETH\n\n"
-        f"• Transaction: <{tx_url}|View Transaction on Explorer>\n\n"
-        f"Time of liquidation: {time.strftime("%Y-%m-%d %H:%M:%S")}\n\n"
-        f"Network: `{config.CHAIN_NAME}`"
-    )
+            f"*Liquidation Opportunity Details:*\n"
+            f"• Profit: {Web3.from_wei(liquidation_data['profit'], 'ether')} ETH\n"
+            f"• Collateral Vault Address: `{liquidation_data['collateral_address']}`\n"
+            f"• Collateral Asset: `{liquidation_data['collateral_asset']}`\n"
+            f"• Leftover Borrow Asset: {Web3.from_wei(liquidation_data['leftover_borrow'],'ether')}\n"
+            f"• Leftover Borrow Asset in ETH terms (excluding gas): {Web3.from_wei(liquidation_data['leftover_borrow_in_eth'], 'ether')} ETH\n\n"
+            f"<{execution_url}|Click here to execute this liquidation manually>\n\n"
+            f"Time of detection: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"Network: `{config.CHAIN_NAME}`"
+        )
     message += f"\n\n{formatted_data}"
 
     slack_payload = {
@@ -341,7 +339,7 @@ def post_low_health_account_report(sorted_accounts, config: ChainConfig) -> None
 
     RISK_DASHBOARD_URL = config.RISK_DASHBOARD_URL
     message += f"\n<{RISK_DASHBOARD_URL}|Risk Dashboard>"
-    message += f"\nTime of report: `{time.strftime("%Y-%m-%d %H:%M:%S")}`"
+    message += f"\nTime of report: `{time.strftime('%Y-%m-%d %H:%M:%S')}`"
     message += f"\nNetwork: `{config.CHAIN_NAME}`"
 
     slack_payload = {
@@ -366,7 +364,7 @@ def post_error_notification(message, config: ChainConfig = None) -> None:
     """
 
     error_message = f":rotating_light: *Error Notification* :rotating_light:\n\n{message}\n\n"
-    error_message += f"Time: {time.strftime("%Y-%m-%d %H:%M:%S")}\n"
+    error_message += f"Time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
     if config:
         error_message += f"Network: `{config.CHAIN_NAME}`"
 

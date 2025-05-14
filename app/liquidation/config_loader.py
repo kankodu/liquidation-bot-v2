@@ -61,17 +61,17 @@ class ChainConfig:
         self.RISK_DASHBOARD_URL = os.getenv("RISK_DASHBOARD_URL")
 
         # Load chain-specific RPC from env using RPC_NAME from config
-        self.RPC_URL = os.getenv(self._chain["RPC_NAME"])
+        self.RPC_URL = os.getenv(self._chain['RPC_NAME'])
         if not self.RPC_URL:
-            raise ValueError(f"Missing RPC URL for {self._chain["name"]}. "
-                           f"Env var {self._chain["RPC_NAME"]} not found")
+            raise ValueError(f"Missing RPC URL for {self._chain['name']}. "
+                           f"Env var {self._chain['RPC_NAME']} not found")
 
         self.w3 = setup_w3(self.RPC_URL)
         self.mainnet_w3 = setup_w3(os.getenv("MAINNET_RPC_URL"))
 
         # Set chain-specific paths
-        self.LOGS_PATH = f"{self._global["LOGS_PATH"]}/{self._chain["name"]}_monitor.log"
-        self.SAVE_STATE_PATH = f"{self._global["SAVE_STATE_PATH"]}/{self._chain["name"]}_state.json"
+        self.LOGS_PATH = f"{self._global['LOGS_PATH']}/{self._chain['name']}_monitor.log"
+        self.SAVE_STATE_PATH = f"{self._global['SAVE_STATE_PATH']}/{self._chain['name']}_state.json"
 
         with open(self._global["EVC_ABI_PATH"], "r", encoding="utf-8") as file:
             interface = json.load(file)
