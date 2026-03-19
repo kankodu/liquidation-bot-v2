@@ -160,6 +160,104 @@ class Vault:
         """
         return self.instance.functions.LTVList().call()
 
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+class WrapperCollateral:
+    """
+    Represents a UniswapV3/V4 wrapper used as collateral in the EVK system.
+    These wrappers hold LP NFTs as ERC6909 tokens and produce two underlying tokens on unwrap.
+    """
+    def __init__(self, address, config: ChainConfig):
+        self.address = address
+        self.config = config
+        self.instance = create_contract_instance(address, config.WRAPPER_ABI_PATH, config)
+
+        # Detect V3 vs V4 by trying token0() (V3) vs currency0() (V4)
+        try:
+            self.token0 = self.instance.functions.token0().call()
+            self.token1 = self.instance.functions.token1().call()
+            self.wrapper_type = "v3"
+            self.pool_address = self.instance.functions.pool().call()
+        except Exception:  # pylint: disable=broad-except
+            raw_currency0 = self.instance.functions.currency0().call()
+            raw_currency1 = self.instance.functions.currency1().call()
+            weth = self.instance.functions.weth().call()
+            self.token0 = weth if raw_currency0 == ZERO_ADDRESS else raw_currency0
+            self.token1 = weth if raw_currency1 == ZERO_ADDRESS else raw_currency1
+            self.wrapper_type = "v4"
+            self.pool_id = self.instance.functions.poolId().call()
+
+        try:
+            self.vault_name = self.instance.functions.name().call()
+            self.vault_symbol = self.instance.functions.symbol().call()
+        except Exception:  # pylint: disable=broad-except
+            self.vault_name = f"Wrapper-{address[:10]}"
+            self.vault_symbol = f"W-{address[:10]}"
+
+    def get_sqrt_price_x96(self):
+        """Get current sqrtPriceX96 from the underlying pool."""
+        if self.wrapper_type == "v3":
+            pool = create_contract_instance(
+                self.pool_address, self.config.UNISWAP_V3_POOL_ABI_PATH, self.config)
+            slot0 = pool.functions.slot0().call()
+            return slot0[0]  # sqrtPriceX96
+        else:
+            # V4: use StateView.getSlot0(poolId)
+            state_view = create_contract_instance(
+                self.config.STATEVIEW, self.config.STATEVIEW_ABI_PATH, self.config)
+            slot0 = state_view.functions.getSlot0(self.pool_id).call()
+            return slot0[0]  # sqrtPriceX96
+
+    def estimate_unwrap_output(self, violator_address, seized_shares):
+        """
+        Estimate the token0/token1 amounts that would result from unwrapping seized shares.
+
+        Returns:
+            Tuple[int, int]: (total_amount0, total_amount1) estimated from previewUnwrap
+        """
+        token_ids = self.instance.functions.getEnabledTokenIds(
+            Web3.to_checksum_address(violator_address)).call()
+
+        if not token_ids:
+            logger.warning("WrapperCollateral: No enabled token IDs for violator %s",
+                           violator_address)
+            return (0, 0)
+
+        # Get total balance (ERC20-like) of violator in wrapper
+        total_balance = self.instance.functions.balanceOf(
+            Web3.to_checksum_address(violator_address)).call()
+
+        if total_balance == 0:
+            return (0, 0)
+
+        sqrt_price_x96 = self.get_sqrt_price_x96()
+
+        total_amount0 = 0
+        total_amount1 = 0
+
+        for token_id in token_ids:
+            # ERC6909 balance for this specific token ID
+            erc6909_balance = self.instance.functions.balanceOf(
+                Web3.to_checksum_address(violator_address), token_id).call()
+
+            if erc6909_balance == 0:
+                continue
+
+            # Proportional amount of this token ID that would be seized
+            proportional_amount = erc6909_balance * seized_shares // total_balance
+
+            if proportional_amount == 0:
+                continue
+
+            (amount0, amount1) = self.instance.functions.previewUnwrap(
+                token_id, sqrt_price_x96, proportional_amount).call()
+
+            total_amount0 += amount0
+            total_amount1 += amount1
+
+        return (total_amount0, total_amount1)
+
+
 class Account:
     """
     Represents an account in the EVK System.
@@ -764,8 +862,32 @@ class PullOracleHandler:
             unit_of_account = vault.unit_of_account
 
             collateral_vault_list = vault.get_ltv_list()
-            asset_list = [Vault(collateral_vault, config).underlying_asset_address
-                          for collateral_vault in collateral_vault_list]
+            asset_list = []
+            for collateral_vault in collateral_vault_list:
+                try:
+                    asset_list.append(Vault(collateral_vault, config).underlying_asset_address)
+                except Exception: # pylint: disable=broad-except
+                    # Not an EVault — try resolving as a Uniswap wrapper (V3 then V4)
+                    try:
+                        wrapper = create_contract_instance(
+                            collateral_vault, config.WRAPPER_ABI_PATH, config)
+                        try:
+                            # V3 wrapper: token0() / token1()
+                            asset_list.append(wrapper.functions.token0().call())
+                            asset_list.append(wrapper.functions.token1().call())
+                            logger.info("PullOracleHandler: Resolved V3 wrapper %s via token0/token1",
+                                        collateral_vault)
+                        except Exception: # pylint: disable=broad-except
+                            # V4 wrapper: currency0() / currency1(), replace address(0) with WETH
+                            raw0 = wrapper.functions.currency0().call()
+                            raw1 = wrapper.functions.currency1().call()
+                            asset_list.append(config.WETH if raw0 == ZERO_ADDRESS else raw0)
+                            asset_list.append(config.WETH if raw1 == ZERO_ADDRESS else raw1)
+                            logger.info("PullOracleHandler: Resolved V4 wrapper %s via currency0/currency1",
+                                        collateral_vault)
+                    except Exception: # pylint: disable=broad-except
+                        logger.info("PullOracleHandler: Skipping unrecognized collateral %s in feed ID resolution",
+                                    collateral_vault)
             asset_list.append(vault.underlying_asset_address)
 
             pyth_feed_ids = set()
@@ -795,6 +917,7 @@ class PullOracleHandler:
 
         except Exception as ex: # pylint: disable=broad-except
             logger.error("PullOracleHandler: Error calling contract: %s", ex, exc_info=True)
+            return []
 
     @staticmethod
     def resolve_cross_oracle(cross_oracle, config):
@@ -894,9 +1017,14 @@ class EVCListener:
                 logger.info("EVCListener: Scanning blocks %s to %s for AccountStatusCheck events.",
                             start_block, end_block)
 
-                logs = self.evc_instance.events.AccountStatusCheck().get_logs(
-                    fromBlock=start_block,
-                    toBlock=end_block)
+                filter_params = {"fromBlock": start_block, "toBlock": end_block}
+                vault_whitelist = self.config.VAULT_WHITELIST
+                if vault_whitelist:
+                    filter_params["argument_filters"] = {
+                        "controller": [Web3.to_checksum_address(v) for v in vault_whitelist]
+                    }
+
+                logs = self.evc_instance.events.AccountStatusCheck().get_logs(**filter_params)
 
                 for log in logs:
                     vault_address = log["args"]["controller"]
@@ -1060,20 +1188,34 @@ class Liquidator:
         }
         max_profit_params = None
 
-        collateral_vaults = {collateral: Vault(collateral, config) for collateral in collateral_list}
+        # Build collateral objects: try Vault (EVault) first, fall back to WrapperCollateral
+        collateral_objects = {}
+        for collateral in collateral_list:
+            try:
+                collateral_objects[collateral] = Vault(collateral, config)
+            except Exception:  # pylint: disable=broad-except
+                try:
+                    collateral_objects[collateral] = WrapperCollateral(collateral, config)
+                    logger.info("Liquidator: Detected wrapper collateral at %s", collateral)
+                except Exception as wrapper_ex:  # pylint: disable=broad-except
+                    logger.error("Liquidator: Failed to create Vault or WrapperCollateral "
+                                 "for %s: %s", collateral, wrapper_ex, exc_info=True)
+                    continue
 
-        for collateral, collateral_vault in collateral_vaults.items():
+        for collateral, collateral_obj in collateral_objects.items():
             try:
                 logger.info("Liquidator: Checking liquidation for "
                             "account %s, borrowed asset %s, collateral asset %s",
                             violator_address, borrowed_asset, collateral)
 
-                liquidation_results = Liquidator.calculate_liquidation_profit(vault,
-                                                                      violator_address,
-                                                                      borrowed_asset,
-                                                                      collateral_vault,
-                                                                      liquidator_contract,
-                                                                      config)
+                if isinstance(collateral_obj, WrapperCollateral):
+                    liquidation_results = Liquidator.calculate_wrapper_liquidation_profit(
+                        vault, violator_address, borrowed_asset,
+                        collateral_obj, liquidator_contract, config)
+                else:
+                    liquidation_results = Liquidator.calculate_liquidation_profit(
+                        vault, violator_address, borrowed_asset,
+                        collateral_obj, liquidator_contract, config)
                 profit_data, params = liquidation_results
 
                 if profit_data["profit"] > max_profit_data["profit"]:
@@ -1221,7 +1363,8 @@ class Liquidator:
                 collateral_asset,
                 max_repay,
                 seized_collateral_shares,
-                config.PROFIT_RECEIVER
+                config.PROFIT_RECEIVER,
+                ZERO_ADDRESS
         )
 
         logger.info("Liquidator: Liquidation params for account %s: %s", violator_address, params)
@@ -1272,6 +1415,269 @@ class Liquidator:
             "collateral_address": collateral_vault.address,
             "collateral_asset": collateral_asset,
             "leftover_borrow": leftover_borrow, 
+            "leftover_borrow_in_eth": leftover_borrow_in_eth
+        }, params)
+
+    @staticmethod
+    def calculate_wrapper_liquidation_profit(vault: Vault,
+                                              violator_address: str,
+                                              borrowed_asset: str,
+                                              wrapper: WrapperCollateral,
+                                              liquidator_contract: Any,
+                                              config: ChainConfig) -> Tuple[Dict[str, Any], Any]:
+        """
+        Calculate the potential profit from liquidating an account using a wrapper collateral.
+        Wrapper collateral produces two tokens on unwrap, requiring 0, 1, or 2 swap quotes.
+        """
+        wrapper_address = wrapper.address
+
+        (max_repay, seized_shares) = vault.check_liquidation(
+            violator_address, wrapper_address, config.LIQUIDATOR_EOA)
+
+        if max_repay == 0 or seized_shares == 0:
+            logger.info("Liquidator: Wrapper - Max Repay %s, Seized Shares %s, "
+                        "liquidation not possible", max_repay, seized_shares)
+            return ({"profit": 0}, None)
+
+        # Estimate unwrap output
+        (amount0, amount1) = wrapper.estimate_unwrap_output(violator_address, seized_shares)
+
+        if amount0 == 0 and amount1 == 0:
+            logger.info("Liquidator: Wrapper - No unwrap output estimated")
+            return ({"profit": 0}, None)
+
+        token0 = wrapper.token0
+        token1 = wrapper.token1
+
+        logger.info("Liquidator: Wrapper unwrap estimate - token0: %s (%s), token1: %s (%s)",
+                     token0, amount0, token1, amount1)
+
+        # Determine swap cases
+        token0_is_borrowed = Web3.to_checksum_address(token0) == Web3.to_checksum_address(borrowed_asset)
+        token1_is_borrowed = Web3.to_checksum_address(token1) == Web3.to_checksum_address(borrowed_asset)
+
+        total_borrowed_output = 0
+        swap_data = []
+        collateral_asset = ZERO_ADDRESS
+        additional_token = ZERO_ADDRESS
+
+        if token0_is_borrowed and token1_is_borrowed:
+            # Case D: both tokens match borrowed asset, no swaps needed
+            total_borrowed_output = amount0 + amount1
+            collateral_asset = ZERO_ADDRESS
+            additional_token = ZERO_ADDRESS
+
+        elif token0_is_borrowed:
+            # Case A: token0 == borrowed, swap token1 only
+            total_borrowed_output = amount0
+            collateral_asset = token1
+            additional_token = ZERO_ADDRESS
+
+            if amount1 > 0:
+                swap_response = Quoter.get_swap_api_quote(
+                    chain_id=config.CHAIN_ID,
+                    token_in=token1,
+                    token_out=borrowed_asset,
+                    amount=int(amount1 * .999),
+                    min_amount_out=0,
+                    receiver=config.SWAPPER,
+                    vault_in=wrapper_address,
+                    account_in=config.SWAPPER,
+                    account_out=config.SWAPPER,
+                    swapper_mode="0",
+                    slippage=config.SWAP_SLIPPAGE,
+                    deadline=int(time.time()) + config.SWAP_DEADLINE,
+                    is_repay=False,
+                    current_debt=max_repay,
+                    target_debt=0,
+                    skip_sweep_deposit_out=True,
+                    config=config
+                )
+                if not swap_response:
+                    return ({"profit": 0}, None)
+                total_borrowed_output += int(swap_response["amountOut"])
+                for item in swap_response["swap"]["multicallItems"]:
+                    swap_data.append(item["data"])
+                time.sleep(config.API_REQUEST_DELAY)
+
+        elif token1_is_borrowed:
+            # Case B: token1 == borrowed, swap token0 only
+            total_borrowed_output = amount1
+            collateral_asset = token0
+            additional_token = ZERO_ADDRESS
+
+            if amount0 > 0:
+                swap_response = Quoter.get_swap_api_quote(
+                    chain_id=config.CHAIN_ID,
+                    token_in=token0,
+                    token_out=borrowed_asset,
+                    amount=int(amount0 * .999),
+                    min_amount_out=0,
+                    receiver=config.SWAPPER,
+                    vault_in=wrapper_address,
+                    account_in=config.SWAPPER,
+                    account_out=config.SWAPPER,
+                    swapper_mode="0",
+                    slippage=config.SWAP_SLIPPAGE,
+                    deadline=int(time.time()) + config.SWAP_DEADLINE,
+                    is_repay=False,
+                    current_debt=max_repay,
+                    target_debt=0,
+                    skip_sweep_deposit_out=True,
+                    config=config
+                )
+                if not swap_response:
+                    return ({"profit": 0}, None)
+                total_borrowed_output += int(swap_response["amountOut"])
+                for item in swap_response["swap"]["multicallItems"]:
+                    swap_data.append(item["data"])
+                time.sleep(config.API_REQUEST_DELAY)
+
+        else:
+            # Case C: neither matches, swap both tokens
+            collateral_asset = token0
+            additional_token = token1
+
+            if amount0 > 0:
+                swap_response_0 = Quoter.get_swap_api_quote(
+                    chain_id=config.CHAIN_ID,
+                    token_in=token0,
+                    token_out=borrowed_asset,
+                    amount=int(amount0 * .999),
+                    min_amount_out=0,
+                    receiver=config.SWAPPER,
+                    vault_in=wrapper_address,
+                    account_in=config.SWAPPER,
+                    account_out=config.SWAPPER,
+                    swapper_mode="0",
+                    slippage=config.SWAP_SLIPPAGE,
+                    deadline=int(time.time()) + config.SWAP_DEADLINE,
+                    is_repay=False,
+                    current_debt=max_repay,
+                    target_debt=0,
+                    skip_sweep_deposit_out=True,
+                    config=config
+                )
+                if not swap_response_0:
+                    return ({"profit": 0}, None)
+                total_borrowed_output += int(swap_response_0["amountOut"])
+                for item in swap_response_0["swap"]["multicallItems"]:
+                    swap_data.append(item["data"])
+                time.sleep(config.API_REQUEST_DELAY)
+
+            if amount1 > 0:
+                swap_response_1 = Quoter.get_swap_api_quote(
+                    chain_id=config.CHAIN_ID,
+                    token_in=token1,
+                    token_out=borrowed_asset,
+                    amount=int(amount1 * .999),
+                    min_amount_out=0,
+                    receiver=config.SWAPPER,
+                    vault_in=wrapper_address,
+                    account_in=config.SWAPPER,
+                    account_out=config.SWAPPER,
+                    swapper_mode="0",
+                    slippage=config.SWAP_SLIPPAGE,
+                    deadline=int(time.time()) + config.SWAP_DEADLINE,
+                    is_repay=False,
+                    current_debt=max_repay,
+                    target_debt=0,
+                    skip_sweep_deposit_out=True,
+                    config=config
+                )
+                if not swap_response_1:
+                    return ({"profit": 0}, None)
+                total_borrowed_output += int(swap_response_1["amountOut"])
+                for item in swap_response_1["swap"]["multicallItems"]:
+                    swap_data.append(item["data"])
+                time.sleep(config.API_REQUEST_DELAY)
+
+        leftover_borrow = total_borrowed_output - max_repay
+
+        if leftover_borrow < 0:
+            logger.warning("Liquidator: Wrapper - Negative leftover borrow, aborting")
+            return ({"profit": 0}, None)
+
+        # Convert leftover to ETH for profit calculation
+        if borrowed_asset != config.WETH:
+            borrow_to_eth_response = Quoter.get_swap_api_quote(
+                chain_id=config.CHAIN_ID,
+                token_in=borrowed_asset,
+                token_out=config.WETH,
+                amount=leftover_borrow,
+                min_amount_out=0,
+                receiver=config.LIQUIDATOR_EOA,
+                vault_in=vault.address,
+                account_in=config.LIQUIDATOR_EOA,
+                account_out=config.LIQUIDATOR_EOA,
+                swapper_mode="0",
+                slippage=config.SWAP_SLIPPAGE,
+                deadline=int(time.time()) + config.SWAP_DEADLINE,
+                is_repay=False,
+                current_debt=0,
+                target_debt=0,
+                skip_sweep_deposit_out=True,
+                config=config
+            )
+            leftover_borrow_in_eth = int(borrow_to_eth_response["amountOut"])
+        else:
+            leftover_borrow_in_eth = leftover_borrow
+
+        time.sleep(config.API_REQUEST_DELAY)
+
+        params = (
+            violator_address,
+            vault.address,
+            borrowed_asset,
+            wrapper_address,
+            collateral_asset,
+            max_repay,
+            seized_shares,
+            config.PROFIT_RECEIVER,
+            additional_token
+        )
+
+        logger.info("Liquidator: Wrapper liquidation params for account %s: %s",
+                     violator_address, params)
+
+        pyth_feed_ids = vault.pyth_feed_ids
+        suggested_gas_price = int(config.w3.eth.gas_price * 1.2)
+
+        if len(pyth_feed_ids) > 0:
+            update_data = PullOracleHandler.get_pyth_update_data(pyth_feed_ids)
+            update_fee = PullOracleHandler.get_pyth_update_fee(update_data, config)
+            liquidation_tx = liquidator_contract.functions.liquidateSingleCollateralWithPythOracle(
+                params, swap_data, [update_data]
+            ).build_transaction({
+                "chainId": config.CHAIN_ID,
+                "from": config.LIQUIDATOR_EOA,
+                "nonce": config.w3.eth.get_transaction_count(config.LIQUIDATOR_EOA),
+                "value": update_fee,
+                "gasPrice": suggested_gas_price
+            })
+        else:
+            liquidation_tx = liquidator_contract.functions.liquidateSingleCollateral(
+                params, swap_data
+            ).build_transaction({
+                "chainId": config.CHAIN_ID,
+                "gasPrice": suggested_gas_price,
+                "from": config.LIQUIDATOR_EOA,
+                "nonce": config.w3.eth.get_transaction_count(config.LIQUIDATOR_EOA)
+            })
+
+        logger.info("Liquidator: Wrapper - leftover borrow in eth: %s", leftover_borrow_in_eth)
+
+        net_profit = leftover_borrow_in_eth - (
+            config.w3.eth.estimate_gas(liquidation_tx) * suggested_gas_price)
+
+        logger.info("Liquidator: Wrapper - Net profit: %s", net_profit)
+
+        return ({
+            "tx": liquidation_tx,
+            "profit": net_profit,
+            "collateral_address": wrapper_address,
+            "collateral_asset": f"{wrapper.token0}/{wrapper.token1}",
+            "leftover_borrow": leftover_borrow,
             "leftover_borrow_in_eth": leftover_borrow_in_eth
         }, params)
 

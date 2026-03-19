@@ -10,8 +10,7 @@ global:
   MINI: 100000000000000000000 # $100
   SMALL: 1000000000000000000000 # $1000
   MEDIUM: 10000000000000000000000 # $10000
-  
-  
+
   # Interval Update Frequency Matrix
   TEENY_LIQ: 86400
   TEENY_HIGH: 86400
@@ -37,7 +36,7 @@ global:
   LARGE_HIGH: 900
   LARGE_LOW: 3600
   LARGE_SAFE: 21600
-  
+
   # Update interval frequency (in seconds)
   MIN_UPDATE_INTERVAL_SMALL: 300
   HIGH_RISK_UPDATE_INTERVAL: 600
@@ -56,8 +55,8 @@ global:
 
   ## MONITORING PARAMETERS ##
   # Batch size for scanning blocks on startup
-  BATCH_SIZE: 10000
-  BATCH_INTERVAL: 0.1
+  BATCH_SIZE: 2000
+  BATCH_INTERVAL: 1 # 1 second wait between two batch calls
   # Time to wait between scanning on regular intervals
   SCAN_INTERVAL: 600 # 2 minutes
 
@@ -69,6 +68,9 @@ global:
   PYTH_ABI_PATH: "contracts/IPyth.json"
   ERC20_ABI_PATH: "out/IERC20.sol/IERC20.json"
   ROUTER_ABI_PATH: "contracts/EulerRouter.json"
+  WRAPPER_ABI_PATH: "contracts/IERC721WrapperBase.json"
+  UNISWAP_V3_POOL_ABI_PATH: "contracts/IUniswapV3Pool.json"
+  STATEVIEW_ABI_PATH: "contracts/IStateView.json"
   LOGS_PATH: "logs/account_monitor_logs.log"
   SAVE_STATE_PATH: "state"
   SAVE_INTERVAL: 1800 # 30 minutes
@@ -84,7 +86,7 @@ global:
 
   ## PYTH FEED ID CACHE ##
   PYTH_CACHE_REFRESH: 86400
-  
+
   ## EOA TO RECEIVE LIQUIDATION PROCEEDS ##
   PROFIT_RECEIVER: "0x8cbB534874bab83e44a7325973D2F04493359dF8"
 
@@ -97,9 +99,18 @@ chains:
   1:
     # Config
     name: "Ethereum"
-    EVC_DEPLOYMENT_BLOCK: 20529207
+    EVC_DEPLOYMENT_BLOCK: 24585431
     EXPLORER_URL: "https://etherscan.io"
     RPC_NAME: "MAINNET_RPC_URL"
+    # Only monitor accounts whose controller is in this list. Empty = monitor all vaults.
+    VAULT_WHITELIST:
+      [
+        "0xf7d5113f9d04dcc1aeebc3a34aa7b523e32edb2b",
+        "0xf9caf8dd6c8ddf8e03f6304a926a0c263374e6cc",
+        "0xa2709c6305b1607e51adb1eb215430f21cb74f31",
+        "0xc97af70ab043927a5d9b682e77d1af3c52559a4e",
+        "0xc9d8768989ad7a202a808fb35c51bf5ed56055bd"
+      ]
 
     # Deployed contract addresses
     contracts:
@@ -109,131 +120,49 @@ chains:
       EVC: "0x0C9a3dd6b8F28529d72d7f9cE918D493519EE383"
       SWAPPER: "0x2Bba09866b6F1025258542478C39720A09B728bF"
       SWAP_VERIFIER: "0xae26485ACDDeFd486Fe9ad7C2b34169d360737c7"
-      
+
       # Other relevant contracts & Units of Account
       WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
       USD: "0x0000000000000000000000000000000000000348"
       BTC: "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
-      
+
       # PYTH address
       PYTH: "0x4305FB66699C3B2702D4d05CF36551390A4c69C6"
-  
-  # Base
-  8453:
+
+      # Uniswap V4 StateView (for getSlot0)
+      STATEVIEW: "0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"
+  130:
     # Config
-    name: "Base"
-    EVC_DEPLOYMENT_BLOCK: 22282342
-    EXPLORER_URL: "https://basescan.org"
-    RPC_NAME: "BASE_RPC_URL"
+    name: "Unichain"
+    EVC_DEPLOYMENT_BLOCK: 40505838
+    EXPLORER_URL: "https://uniscan.xyz"
+    RPC_NAME: "UNICHAIN_RPC_URL"
+    # Only monitor accounts whose controller is in this list. Empty = monitor all vaults.
+    VAULT_WHITELIST:
+      [
+        "0xfea428f58c678b3f14fd750200bf14906f21e53c",
+        "0xa6be43f0505da6e37b0805e1a0b7aacb3065f0c8",
+        "0x2bb434603b4bf062d777bdc5af23af9cabd27fe2",
+        "0xca53397e513590d99bac7b465909c42967d1f4e7"
+      ]
 
     # Deployed contract addresses
     contracts:
-      LIQUIDATOR_CONTRACT: "0x7608926d200d2a85dDB3a034ADb7D18fD2D5F3Cf"
+      LIQUIDATOR_CONTRACT: "0xAAF93d5475d092EA68a748137eE19D8130918392"
 
       #EVK Addresses
-      EVC: "0x5301c7dD20bD945D2013b48ed0DEE3A284ca8989"
-      SWAPPER: "0x0D3d0F97eD816Ca3350D627AD8e57B6AD41774df"
-      SWAP_VERIFIER: "0x30660764A7a05B84608812C8AFC0Cb4845439EEe"
-      
+      EVC: "0x2A1176964F5D7caE5406B627Bf6166664FE83c60"
+      SWAPPER: "0xDF3009390D10dC18a8f8B42402F1541c7235DfB4"
+      SWAP_VERIFIER: "0xDAd370C74A9Fe7e6bfd55De69Baf81060e51eab4"
+
       # Other relevant contracts & Units of Account
       WETH: "0x4200000000000000000000000000000000000006"
       USD: "0x0000000000000000000000000000000000000348"
       BTC: "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
-      
-      # PYTH address
-      PYTH: "0x8250f4aF4B972684F7b336503E2D6dFeDeB1487a"
 
-  # Swell
-  1923:
-    # Config
-    name: "Swell"
-    EVC_DEPLOYMENT_BLOCK: 485320
-    EXPLORER_URL: "https://explorer.swellnetwork.io"
-    RPC_NAME: "SWELL_RPC_URL"
-
-    # Deployed contract addresses
-    contracts:
-      LIQUIDATOR_CONTRACT: "0xA8A46596a7B17542d2cf6993FC61Ea0CBb4474c1"
-
-      #EVK Addresses
-      EVC: "0x08739CBede6E28E387685ba20e6409bD16969Cde"
-      SWAPPER: "0x05Eb1A647265D974a1B0A57206048312604Ac6C3"
-      SWAP_VERIFIER: "0x392C1570b3Bf29B113944b759cAa9a9282DA12Fe"
-      
-      # Other relevant contracts & Units of Account
-      WETH: "0x4200000000000000000000000000000000000006"
-      USD: "0x0000000000000000000000000000000000000348"
-      BTC: "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
-      
-      # PYTH address
-      PYTH: ""
-
-  # Sonic
-  146:
-    # Config
-    name: "Sonic"
-    EVC_DEPLOYMENT_BLOCK: 5324624
-    EXPLORER_URL: "https://sonicscan.org"
-    RPC_NAME: "SONIC_RPC_URL"
-
-    # Deployed contract addresses
-    contracts:
-      LIQUIDATOR_CONTRACT: "0x431e0a2768de070E860F33653C4634BD69aa4c6a"
-
-      #EVK Addresses
-      EVC: "0x4860C903f6Ad709c3eDA46D3D502943f184D4315"
-      SWAPPER: "0xbAf5B12c92711a3657DD4adA6b3C7801e83Bb56a"
-      SWAP_VERIFIER: "0x003ef4048b45a5A79D4499aaBd52108B3Bc9209f"
-      
-      # Other relevant contracts & Units of Account
-      WETH: "0x4200000000000000000000000000000000000006"
-      USD: "0x0000000000000000000000000000000000000348"
-      BTC: "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
-      
       # PYTH address
       PYTH: "0x2880aB155794e7179c9eE2e38200202908C17B43"
 
-  60808:
-    name: "BOB"
-    EVC_DEPLOYMENT_BLOCK: 11481883
-    EXPLORER_URL: "https://explorer.gobob.xyz/"
-    RPC_NAME: "BOB_RPC_URL"
-
-    # Deployed contract addresses
-    contracts:
-      LIQUIDATOR_CONTRACT: "0x431e0a2768de070E860F33653C4634BD69aa4c6a"
-
-      #EVK Addresses
-      EVC: "0x59f0FeEc4fA474Ad4ffC357cC8d8595B68abE47d"
-      SWAPPER: "0x697Ca30D765c1603890D88AAffBa3BeCCe72059d"
-      SWAP_VERIFIER: "0x296041DbdBC92171293F23c0a31e1574b791060d"
-      
-      # Other relevant contracts & Units of Account
-      WETH: "0x4200000000000000000000000000000000000006"
-      USD: "0x0000000000000000000000000000000000000348"
-      BTC: "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
-      
-      # PYTH address
-      PYTH: "0x2880aB155794e7179c9eE2e38200202908C17B43"
-  
-  80094:
-    name: "Berachain"
-    EVC_DEPLOYMENT_BLOCK: 786266
-    EXPLORER_URL: "https://berascan.com/"
-    RPC_NAME: "BERA_RPC_URL"
+      # Uniswap V4 StateView (for getSlot0)
+      STATEVIEW: "0x86e8631a016f9068c3f085faf484ee3f5fdee8f2"
     
-    contracts:
-      LIQUIDATOR_CONTRACT: "0xA8A46596a7B17542d2cf6993FC61Ea0CBb4474c1"
-
-      #EVK Addresses
-      EVC: "0x45334608ECE7B2775136bC847EB92B5D332806A9"
-      SWAPPER: "0x4A35e6A872cf35623cd3fD07ebECEDFc0170D705"
-      SWAP_VERIFIER: "0x6fFf8Ac4AB123B62FF5e92aBb9fF702DCBD6C939"
-      
-      # Other relevant contracts & Units of Account
-      WETH: "0x4200000000000000000000000000000000000006"
-      USD: "0x0000000000000000000000000000000000000348"
-      BTC: "0xbBbBBBBbbBBBbbbBbbBbbbbBBbBbbbbBbBbbBBbB"
-      
-      # PYTH address
-      PYTH: "0x2880aB155794e7179c9eE2e38200202908C17B43"

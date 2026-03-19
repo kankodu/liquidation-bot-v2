@@ -10,6 +10,12 @@ import {IEVault, IRiskManager, IBorrowing, ILiquidation} from "./IEVault.sol";
 
 import {IPyth} from "./IPyth.sol";
 
+interface IERC721WrapperBase {
+    function getEnabledTokenIds(address owner) external view returns (uint256[] memory);
+    function balanceOf(address owner, uint256 tokenId) external view returns (uint256);
+    function unwrap(address from, uint256 tokenId, address to, uint256 amount, bytes calldata extraData) external;
+}
+
 contract Liquidator {
     address public immutable owner;
     address public immutable swapperAddress;
@@ -49,6 +55,7 @@ contract Liquidator {
         uint256 repayAmount;
         uint256 seizedCollateralAmount;
         address receiver;
+        address additionalToken;
     }
 
     event Liquidation(
@@ -60,8 +67,38 @@ contract Liquidator {
         uint256 amountCollaterallSeized
     );
 
+    /// @notice Redeem collateral from an EVault or unwrap from an ERC721 wrapper
+    /// @dev Tries IERC4626.asset() first. If it succeeds, the collateral is an EVault and we redeem.
+    ///      If it reverts, we treat it as a wrapper and unwrap all enabled token IDs.
+    function redeemOrUnwrap(address collateralVault, uint256 maxYield, address recipient) external {
+        require(msg.sender == address(this), "Unauthorized");
+
+        // Try to call asset() to determine if this is an EVault
+        (bool isEVault, ) = collateralVault.staticcall(abi.encodeCall(IERC4626.asset, ()));
+
+        if (isEVault) {
+            // Standard EVault: redeem shares for underlying asset to recipient
+            IERC4626(collateralVault).redeem(maxYield, recipient, address(this));
+        } else {
+            // ERC721 Wrapper: unwrap all enabled token IDs to recipient
+            IERC721WrapperBase wrapper = IERC721WrapperBase(collateralVault);
+            uint256[] memory tokenIds = wrapper.getEnabledTokenIds(address(this));
+            for (uint256 i = 0; i < tokenIds.length; i++) {
+                uint256 balance = wrapper.balanceOf(address(this), tokenIds[i]);
+                if (balance > 0) {
+                    wrapper.unwrap(address(this), tokenIds[i], recipient, balance, "");
+                }
+            }
+        }
+    }
+
     function liquidateSingleCollateral(LiquidationParams calldata params, bytes[] calldata swapperData) external returns (bool success) {
-        bytes[] memory multicallItems = new bytes[](swapperData.length + 2);
+        // Build multicall: swap data items + repay + sweep borrowed asset + optional sweeps
+        uint256 extraSweeps = 0;
+        if (params.collateralAsset != address(0)) extraSweeps++;
+        if (params.additionalToken != address(0)) extraSweeps++;
+
+        bytes[] memory multicallItems = new bytes[](swapperData.length + 2 + extraSweeps);
 
         for (uint256 i = 0; i < swapperData.length; i++){
             multicallItems[i] = swapperData[i];
@@ -69,11 +106,21 @@ contract Liquidator {
 
         // Use swapper contract to repay borrowed asset
         multicallItems[swapperData.length] =
-            // abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, params.repayAmount, address(this)));
             abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, type(uint256).max, address(this)));
 
-        // Sweep any dust left in the swapper contract
+        // Sweep borrowed asset dust to receiver
         multicallItems[swapperData.length + 1] = abi.encodeCall(ISwapper.sweep, (params.borrowedAsset, 0, params.receiver));
+
+        // Sweep collateral asset if present (wrapper: one of the two tokens may match borrowed)
+        uint256 sweepIdx = swapperData.length + 2;
+        if (params.collateralAsset != address(0)) {
+            multicallItems[sweepIdx] = abi.encodeCall(ISwapper.sweep, (params.collateralAsset, 0, params.receiver));
+            sweepIdx++;
+        }
+        // Sweep additional token if present (wrapper: second unwrapped token)
+        if (params.additionalToken != address(0)) {
+            multicallItems[sweepIdx] = abi.encodeCall(ISwapper.sweep, (params.additionalToken, 0, params.receiver));
+        }
 
         IEVC.BatchItem[] memory batchItems = new IEVC.BatchItem[](7);
 
@@ -102,19 +149,19 @@ contract Liquidator {
             value: 0,
             data: abi.encodeCall(
                 ILiquidation.liquidate,
-                (params.violatorAddress, params.collateralVault, maxRepay, 0) // TODO: adjust minimum collateral
+                (params.violatorAddress, params.collateralVault, maxRepay, 0)
             )
         });
 
-        // Step 4: Withdraw collateral from vault to swapper
+        // Step 4: Redeem collateral (EVault) or unwrap (ERC721 wrapper) to swapper
         batchItems[3] = IEVC.BatchItem({
             onBehalfOfAccount: address(this),
-            targetContract: params.collateralVault,
+            targetContract: address(this),
             value: 0,
-            data: abi.encodeCall(IERC4626.redeem, (maxYield, swapperAddress, address(this)))
+            data: abi.encodeCall(this.redeemOrUnwrap, (params.collateralVault, maxYield, swapperAddress))
         });
 
-        // Step 5: Swap collateral for borrowed asset, repay, and sweep overswapped borrow asset
+        // Step 5: Swap collateral for borrowed asset, repay, and sweep
         batchItems[4] = IEVC.BatchItem({
             onBehalfOfAccount: address(this),
             targetContract: swapperAddress,
@@ -157,7 +204,12 @@ contract Liquidator {
     }
 
     function liquidateSingleCollateralWithPythOracle(LiquidationParams calldata params, bytes[] calldata swapperData, bytes[] calldata pythUpdateData) external payable returns (bool success) {
-        bytes[] memory multicallItems = new bytes[](swapperData.length + 2);
+        // Build multicall: swap data items + repay + sweep borrowed asset + optional sweeps
+        uint256 extraSweeps = 0;
+        if (params.collateralAsset != address(0)) extraSweeps++;
+        if (params.additionalToken != address(0)) extraSweeps++;
+
+        bytes[] memory multicallItems = new bytes[](swapperData.length + 2 + extraSweeps);
 
         for (uint256 i = 0; i < swapperData.length; i++){
             multicallItems[i] = swapperData[i];
@@ -165,11 +217,21 @@ contract Liquidator {
 
         // Use swapper contract to repay borrowed asset
         multicallItems[swapperData.length] =
-            // abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, params.repayAmount, address(this)));
             abi.encodeCall(ISwapper.repay, (params.borrowedAsset, params.vault, type(uint256).max, address(this)));
 
-        // Sweep any dust left in the swapper contract
+        // Sweep borrowed asset dust to receiver
         multicallItems[swapperData.length + 1] = abi.encodeCall(ISwapper.sweep, (params.borrowedAsset, 0, params.receiver));
+
+        // Sweep collateral asset if present (wrapper: one of the two tokens may match borrowed)
+        uint256 sweepIdx = swapperData.length + 2;
+        if (params.collateralAsset != address(0)) {
+            multicallItems[sweepIdx] = abi.encodeCall(ISwapper.sweep, (params.collateralAsset, 0, params.receiver));
+            sweepIdx++;
+        }
+        // Sweep additional token if present (wrapper: second unwrapped token)
+        if (params.additionalToken != address(0)) {
+            multicallItems[sweepIdx] = abi.encodeCall(ISwapper.sweep, (params.additionalToken, 0, params.receiver));
+        }
 
         IEVC.BatchItem[] memory batchItems = new IEVC.BatchItem[](7);
 
@@ -201,19 +263,19 @@ contract Liquidator {
             value: 0,
             data: abi.encodeCall(
                 ILiquidation.liquidate,
-                (params.violatorAddress, params.collateralVault, maxRepay, 0) // TODO: adjust minimum collateral
+                (params.violatorAddress, params.collateralVault, maxRepay, 0)
             )
         });
 
-        // Step 4: Withdraw collateral from vault to swapper
+        // Step 4: Redeem collateral (EVault) or unwrap (ERC721 wrapper) to swapper
         batchItems[3] = IEVC.BatchItem({
             onBehalfOfAccount: address(this),
-            targetContract: params.collateralVault,
+            targetContract: address(this),
             value: 0,
-            data: abi.encodeCall(IERC4626.redeem, (maxYield, swapperAddress, address(this)))
+            data: abi.encodeCall(this.redeemOrUnwrap, (params.collateralVault, maxYield, swapperAddress))
         });
 
-        // Step 5: Swap collateral for borrowed asset, repay, and sweep overswapped borrow asset
+        // Step 5: Swap collateral for borrowed asset, repay, and sweep
         batchItems[4] = IEVC.BatchItem({
             onBehalfOfAccount: address(this),
             targetContract: swapperAddress,
